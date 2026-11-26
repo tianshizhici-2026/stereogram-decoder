@@ -2,7 +2,7 @@
 <html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>平行眼 · 深度图还原</title>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#eef3f2;color:#183c39;font:16px/1.6 Inter,"Microsoft YaHei",sans-serif}main{max-width:1100px;margin:auto;padding:7vh 5vw}h1{font-size:clamp(32px,5vw,56px);line-height:1.15;margin:0 0 14px;letter-spacing:-.05em}p{margin:0 0 24px}section{background:white;border:1px solid #cbd9d6;border-radius:18px;padding:20px}header,.controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap}button,.pick{font:inherit;border:1px solid #b1c8c3;border-radius:8px;padding:8px 16px;background:white;color:inherit;cursor:pointer}.pick{background:#14594e;color:white;position:relative}.pick input{position:absolute;inset:0;opacity:0;width:100%;cursor:pointer}.pick:focus-within,button:focus-visible{outline:3px solid #269f91}input[type=number]{width:6em;padding:8px;border:1px solid #aec2bd;border-radius:6px;font:inherit}button:disabled{opacity:.45;cursor:default}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:20px 0}figure{margin:0}figcaption{font-weight:650;margin-bottom:6px}.panel{background:#edf2f1;min-height:230px;display:grid;place-items:center;border-radius:10px;overflow:hidden;color:#536f69}.panel>*{grid-area:1/1}.panel canvas{display:block;width:100%;height:auto}.panel canvas[hidden]{display:none}small{color:#486660}details{margin:12px 0}summary{cursor:pointer}#status{margin:0;flex:1}footer{display:flex;align-items:center;gap:12px;flex-wrap:wrap}@media(max-width:650px){main{padding:32px 14px}.grid{grid-template-columns:1fr}.panel{min-height:145px}section{padding:14px}}
-</style><main><h1>平行眼深度图还原</h1><p>选一张重复纹理立体图，直接查看藏在里面的形状。</p><section><header><label class="pick">选择图片<input id="file" type="file" accept="image/*" aria-label="选择立体图"></label><small>图片仅在当前设备处理</small></header>
+</style><main><h1>平行眼深度图还原</h1><p>选一张横向重复纹理的立体图，直接查看藏在里面的形状。</p><section><header><label class="pick">选择图片<input id="file" type="file" accept="image/*" aria-label="选择立体图"></label><small>图片仅在当前设备处理</small></header>
 <div class="grid"><figure><figcaption>原图</figcaption><div class="panel"><span>在这里预览原图</span><canvas hidden id="src"></canvas></div></figure><figure><figcaption>相对深度 · 越亮越近</figcaption><div class="panel"><span>解码结果将在这里显示</span><canvas hidden id="dst"></canvas></div></figure></div>
 <details><summary>调整重复间距</summary><small>自动识别不准时，输入原图同一行中相邻两处相同背景花纹的像素间距。留空使用自动识别。</small><div class="controls"><label>间距（px） <input id="period" type="number" min="1" step="1" placeholder="自动"></label><button id="again" disabled>重新解码</button></div></details>
 <footer><p id="status" role="status">等待选择图片</p><button disabled id="save">下载 PNG</button></footer></section></main>
@@ -77,23 +77,23 @@ function decode(data,w,h,override){
  for(let i=0;i<N;i++){out[4*i]=out[4*i+1]=out[4*i+2]=12+233*Math.max(0,(p-best[i])/Math.max(2,p-near));out[4*i+3]=255}
  return {out,W,h,p}
 }
-function decodeWithRetry(data,w,h,p,notify){
+function decodeWithRetry(data,w,h,p){
  try{return decode(data,w,h,p)}catch(error){if(!(error instanceof MatchError))throw error}
- notify();
+
  const rotated=new Uint8ClampedArray(data.length);
  const source=new Uint32Array(data.buffer,data.byteOffset,w*h);
  const target=new Uint32Array(rotated.buffer);
  for(let y=0;y<h;y++)for(let x=0;x<w;x++)target[(w-1-x)*h+y]=source[y*w+x];
  try{return {...decode(rotated,h,w,p),rotated:true}}catch(error){
    if(!(error instanceof MatchError))throw error;
-   throw new MatchError('原方向和逆时针 90° 均未解码成功，请检查图片或调整重复间距。')
+   throw new MatchError('未找到可靠的重复纹理，请手动指定间距。')
  }
 }
 </script>
 <script>
 const el=id=>document.getElementById(id),src=el('src'),dst=el('dst'),statusText=el('status');
 const workerUrl=URL.createObjectURL(new Blob([el('algorithm').textContent,`
-onmessage=e=>{try{const {data,w,h,p}=e.data;const r=decodeWithRetry(data,w,h,p,()=>postMessage({retry:true}));postMessage(r,[r.out.buffer])}catch(error){postMessage({error:error.message})}}`],{type:'application/javascript'}));
+onmessage=e=>{try{const {data,w,h,p}=e.data;const r=decodeWithRetry(data,w,h,p);postMessage(r,[r.out.buffer])}catch(error){postMessage({error:error.message})}}`],{type:'application/javascript'}));
 let worker,serial=0,scale=1,base='depth';
 function visible(c,v){c.hidden=!v;c.previousElementSibling.hidden=v}
 function reset(){worker?.terminate();visible(dst,false);el('save').disabled=true}
@@ -101,9 +101,9 @@ function run(){reset();const v=el('period');if(!v.reportValidity())return;
  statusText.textContent='正在匹配重复纹理…';
  const w=src.width,h=src.height;const {data}=src.getContext('2d').getImageData(0,0,w,h);
  worker=new Worker(workerUrl);
- worker.onmessage=({data:r})=>{if(r.retry){statusText.textContent='原方向匹配失败，正在逆时针旋转 90° 重试…';return}worker.terminate();if(r.error){statusText.textContent=r.error;return}
+ worker.onmessage=({data:r})=>{worker.terminate();if(r.error){statusText.textContent=r.error;return}
  dst.width=r.W;dst.height=r.h;dst.getContext('2d').putImageData(new ImageData(r.out,r.W,r.h),0,0);visible(dst,true);el('save').disabled=false;
- statusText.textContent=(r.rotated?'已逆时针旋转 90° 解码 · ':'')+'背景间距约 '+Math.round(r.p/scale)+' px · 两侧无法配对的区域已裁去'};
+ statusText.textContent='背景间距约 '+Math.round(r.p/scale)+' px · 两侧无法配对的区域已裁去'};
  worker.onerror=()=>{statusText.textContent='解码失败，请尝试较小的图片或重新选择。';worker.terminate()};
  worker.postMessage({data,w,h,p:v.value?Math.max(1,Math.round(Number(v.value)*scale)):0},[data.buffer])}
 el('file').onchange=async e=>{const f=e.target.files[0];if(!f)return;const id=++serial;reset();visible(src,false);el('again').disabled=true;el('period').value='';statusText.textContent='正在读取图片…';const url=URL.createObjectURL(f);
